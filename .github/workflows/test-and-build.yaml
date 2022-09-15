@@ -9,58 +9,43 @@ on:
   release:
     types: [published]
 
-
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      ARCH: amd64
-      DEBIAN_VERSION: buster
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Run Tests
         run: |
-          echo "Building ${ARCH}-${DEBIAN_VERSION}"
-          ./gh-actions-test.sh
+          echo "Building image to test"
+          ./build-and-test.sh
 
   build-and-publish:
     if: github.event_name != 'pull_request'
+    # If only readme has been touched, for example, then the `test` job will have been skipped. This job will therefore be skipped, too.
     needs: test
     runs-on: ubuntu-latest
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v2
+        if: github.event_name != 'schedule'
+        uses: actions/checkout@v3
       -
-        name: Calculate the versions to use
-        id: variables
-        run: |
-          # If trigged by schedule then container tag will be nightly, else it's either dev or whatever the tagged version number is
-          PIHOLE_VERSION=$([ "${{ github.event_name == 'schedule' }}" = "true" ] && echo "nightly" || echo "${GITHUB_REF#refs/*/}")
-
-          # If we are building dev branch or nightly then we want to use the development branches of the core components
-          # otherwise they will be unset and the main branches will be pulled
-          if [ "${PIHOLE_VERSION}" = "dev" || "${PIHOLE_VERSION}" = "nightly" ]; then
-            CORE_VERSION=development
-            WEB_VERSION=devel
-            FTL_VERSION=development
-          fi
-
-          echo ::set-output name=CORE_VERSION::${CORE_VERSION}
-          echo ::set-output name=WEB_VERSION::${WEB_VERSION}
-          echo ::set-output name=FTL_VERSION::${FTL_VERSION}
-          echo ::set-output name=PIHOLE_VERSION::${PIHOLE_VERSION}
+        name: Checkout dev branch if we are building nightly
+        if: github.event_name == 'schedule'
+        uses: actions/checkout@v3
+        with:
+          ref: dev
       -
         name: Set up QEMU
-        uses: docker/setup-qemu-action@v1
+        uses: docker/setup-qemu-action@v2
       -
         name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
+        uses: docker/setup-buildx-action@v2
       -
         name: Docker meta
         id: meta
-        uses: docker/metadata-action@v3
+        uses: docker/metadata-action@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           images: |
@@ -69,31 +54,30 @@ jobs:
           flavor: |
             latest=${{ startsWith(github.ref, 'refs/tags/') }}
           tags: |
-            ${{ steps.variables.outputs.PIHOLE_VERSION }}
+            type=schedule
+            type=ref,event=branch,enable=${{ github.event_name != 'schedule' }}
+            type=ref,event=tag
       -
         name: Login to DockerHub
-        uses: docker/login-action@v1
+        uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_PASS }}
       -
         name: Login to GitHub Container Registry
-        uses: docker/login-action@v1
+        uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       -
         name: Build and push
-        uses: docker/build-push-action@v2
+        uses: docker/build-push-action@v3
         with:
-          context: .
-          platforms: linux/amd64, linux/arm64, linux/386, linux/arm/v7, linux/arm/v6, linux/ppc64le
+          context: ./src/
+          platforms: linux/amd64, linux/arm64, linux/386, linux/arm/v7, linux/arm/v6
           build-args: |
-            CORE_VERSION=${{ steps.variables.outputs.CORE_VERSION }}
-            WEB_VERSION=${{ steps.variables.outputs.WEB_VERSION }}
-            FTL_VERSION=${{ steps.variables.outputs.FTL_VERSION }}
-            PIHOLE_VERSION=${{ steps.variables.outputs.PIHOLE_VERSION }}
+            PIHOLE_DOCKER_TAG=${{ steps.meta.outputs.version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
